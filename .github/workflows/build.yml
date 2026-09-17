@@ -40,8 +40,8 @@ jobs:
 
       - name: Add luci-app-aether feed
         run: |
-          mkdir -p sdk/feeds/custom/aether
-          rsync -a --exclude='sdk/' --exclude='.git/' ./ sdk/feeds/custom/aether/
+          mkdir -p sdk/feeds/custom
+          rsync -a --exclude='sdk/' --exclude='.git/' ./ sdk/feeds/custom/luci-app-aether/
           echo "src-link custom feeds/custom" >> sdk/feeds.conf.default
           cd sdk
           ./scripts/feeds update custom
