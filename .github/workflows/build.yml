@@ -50,8 +50,8 @@ jobs:
         run: |
           cd sdk
           make defconfig
-          ./scripts/config --set-str CONFIG_PACKAGE_luci-app-aether=y
-          make defconfig
+          echo "CONFIG_PACKAGE_luci-app-aether=y" >> .config
+          make oldconfig
 
       - name: Build
         run: |
