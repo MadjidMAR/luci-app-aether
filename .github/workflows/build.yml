@@ -42,6 +42,7 @@ jobs:
         run: |
           mkdir -p sdk/feeds/custom/aether
           rsync -a --exclude='sdk/' --exclude='.git/' ./ sdk/feeds/custom/aether/
+          echo "src-link custom feeds/custom" >> sdk/feeds.conf.default
           cd sdk
           ./scripts/feeds update custom
           ./scripts/feeds install -a -p custom
