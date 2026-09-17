@@ -54,6 +54,12 @@ jobs:
           echo "CONFIG_PACKAGE_luci-app-aether=y" >> .config
           make oldconfig
 
+      - name: Check package installed
+        run: |
+          ls -la sdk/package/feeds/custom/ 2>/dev/null || echo "no feeds/custom dir"
+          find sdk/package/feeds -name "Makefile" 2>/dev/null | head -10
+          ls sdk/feeds/custom/luci-app-aether/ 2>/dev/null || echo "feed dir missing"
+
       - name: Build
         run: |
           cd sdk
