@@ -14,31 +14,29 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - arch: aarch64
-            subtarget: generic
+          - sdk_url: "https://downloads.openwrt.org/snapshots/targets/bcm4908/generic/openwrt-sdk-bcm4908-generic_gcc-14.4.0_musl.Linux-x86_64.tar.zst"
             pkgarch: aarch64_cortex-a53
-          - arch: arm
-            subtarget: armv7
+          - sdk_url: "https://downloads.openwrt.org/snapshots/targets/sunxi/cortexa7/openwrt-sdk-sunxi-cortexa7_gcc-14.4.0_musl_eabi.Linux-x86_64.tar.zst"
             pkgarch: arm_cortex-a7_neon-vfpv4
-          - arch: x86
-            subtarget: 64
+          - sdk_url: "https://downloads.openwrt.org/releases/24.10.0/targets/x86/64/openwrt-sdk-24.10.0-x86-64_gcc-13.3.0_musl.Linux-x86_64.tar.zst"
             pkgarch: x86_64
 
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install zstd
+        run: sudo apt-get update && sudo apt-get install -y zstd
+
       - name: Download OpenWrt SDK
         run: |
-          SDK_URL="https://downloads.openwrt.org/releases/24.10.0/targets/${{ matrix.arch }}/${{ matrix.subtarget }}/openwrt-sdk-24.10.0-${{ matrix.arch }}-${{ matrix.subtarget }}_gcc-13.3.0_musl.Linux-x86_64.tar.xz"
-          echo "Downloading SDK: $SDK_URL"
-          wget -q --timeout=120 "$SDK_URL" -O sdk.tar.xz || {
-            echo "SDK not found at expected URL, trying alternative..."
-            SDK_URL="https://downloads.openwrt.org/releases/24.10.0/targets/${{ matrix.arch }}/${{ matrix.subtarget }}/openwrt-sdk-24.10.0-${{ matrix.arch }}_gcc-13.3.0_musl.Linux-x86_64.tar.xz"
-            wget -q --timeout=120 "$SDK_URL" -O sdk.tar.xz
-          }
-          tar xf sdk.tar.xz
+          wget -q --timeout=180 "${{ matrix.sdk_url }}" -O sdk.tar.zst
+          ls -la sdk.tar.zst
+
+      - name: Extract SDK
+        run: |
+          tar --zstd -xf sdk.tar.zst
           mv openwrt-sdk-* sdk
-          ls -la sdk/
+          ls sdk/
 
       - name: Add luci-app-aether feed
         run: |
@@ -48,10 +46,16 @@ jobs:
           ./scripts/feeds update custom
           ./scripts/feeds install -a -p custom
 
-      - name: Build package
+      - name: Enable package
         run: |
           cd sdk
           make defconfig
+          ./scripts/config --set-str CONFIG_PACKAGE_luci-app-aether=y
+          make defconfig
+
+      - name: Build
+        run: |
+          cd sdk
           make package/luci-app-aether/compile V=s
 
       - name: Collect IPK
@@ -71,14 +75,18 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'release'
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
+
       - name: Generate repo index
         run: |
           cd artifacts
           bash ../gen-repo.sh .
+
       - name: Upload to release
         uses: softprops/action-gh-release@v1
         with:
