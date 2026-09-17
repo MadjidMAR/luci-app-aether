@@ -74,7 +74,7 @@ echo "Enabling and starting aether service..."
 
 echo ""
 echo "Installation complete!"
-echo "Open LuCI → Services → Aether to configure."
+echo "Open LuCI -> Services -> Aether to configure."
 echo ""
 echo "Logs: logread -e aether"
 echo "Status: /etc/init.d/aether status"

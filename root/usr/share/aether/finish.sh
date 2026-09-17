@@ -1,7 +1,5 @@
 #!/bin/sh
-# Aether TUN finish task — runs DETACHED (setsid) after start_service
-# Retries indefinitely so the service self-heals after reboot/power loss
-# Supports all protocols: gool, masque, wireguard, mim
+# Aether TUN finish task (gool-only) — runs DETACHED (setsid) after start_service
 
 . /lib/functions.sh
 . /usr/share/aether/setup-lib.sh

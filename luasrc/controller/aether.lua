@@ -2,10 +2,10 @@ module("luci.controller.aether", package.seeall)
 
 function index()
 	entry({"admin", "services", "aether"},
-		cbi("aether"), _("Aether"), 60).dependent = true
+		cbi("aether"), "Aether", 60).dependent = true
 
 	entry({"admin", "services", "aether", "status"},
-		template("aether/status"), _("Status"), 1).leaf = true
+		template("aether/status"), "Status", 1).leaf = true
 
 	entry({"admin", "services", "aether", "api", "status"},
 		call("act_status"), nil).leaf = true
@@ -27,10 +27,10 @@ function act_status()
 	local uptime = luci.sys.exec("cat " .. run .. "/uptime 2>/dev/null"):gsub("\n", "")
 	local core_pid = luci.sys.exec("cat " .. run .. "/core.pid 2>/dev/null"):gsub("\n", "")
 	local hev_pid = luci.sys.exec("cat " .. run .. "/hev.pid 2>/dev/null"):gsub("\n", "")
-	
+
 	local protocol = luci.sys.exec("uci -q get aether.main.protocol 2>/dev/null"):gsub("\n", "")
 	local vpn_mode = luci.sys.exec("uci -q get aether.main.vpn_mode 2>/dev/null"):gsub("\n", "")
-	
+
 	luci.http.prepare_content("application/json")
 	luci.http.write(string.format(
 		'{"state":"%s","uptime":"%s","protocol":"%s","vpn_mode":"%s","core_pid":"%s","hev_pid":"%s"}',
@@ -41,7 +41,7 @@ end
 function act_connect()
 	local action = luci.http.formvalue("action")
 	local run = "/var/run/aether"
-	
+
 	if action == "on" then
 		luci.sys.call("/etc/init.d/aether enable; /etc/init.d/aether start >/dev/null 2>&1")
 	elseif action == "off" then
@@ -59,9 +59,6 @@ function act_connect()
 end
 
 function act_egress()
-	-- Instant: always answer from the cached probe. A real probe runs
-	-- in the background only on explicit refresh (or a missing cache),
-	-- guarded by a 1-minute lock so clicks can't stampede it.
 	local run = "/var/run/aether"
 	if luci.http.formvalue("refresh") == "1" then
 		luci.sys.exec("[ -e " .. run .. "/egress.lock ] " ..
@@ -77,7 +74,6 @@ function act_egress()
 end
 
 function act_refresh_iran()
-	-- Trigger Iranian prefix list refresh
 	luci.sys.call("/usr/share/aether/refresh-iran-ranges.sh >/var/run/aether/refresh.log 2>&1 &")
 	luci.http.prepare_content("application/json")
 	luci.http.write('{"ok":true,"message":"Refresh started in background"}')

@@ -1,6 +1,5 @@
 #!/bin/sh /etc/rc.common
-# Aether for OpenWrt (procd): multi-protocol censorship circumvention
-# Supports: gool, masque, wireguard, mim
+# Aether for OpenWrt (procd): Gool-only (WG-in-WG) censorship circumvention
 # Full-system TUN via hev-socks5-tunnel with nftables/fw4 integration
 # Automatic WAN detection, IPv6 support, multi-WAN awareness
 
@@ -38,7 +37,7 @@ die() {
 # Validate endpoint format: host:port (IPv4, hostname, or [IPv6]:port)
 valid_endpoint() {
 	case "$1" in
-		*\]*:*|*:*) return 0 ;;
+		*\\]*:*|*:* ) return 0 ;;
 		*) return 1 ;;
 	esac
 }
@@ -50,28 +49,25 @@ section_get() {
 	export "$1=$val"
 }
 
-# Load all UCI options with defensive defaults
+# Load all UCI options with defensive defaults (gool-only)
 load_options() {
 	local opts="enabled protocol scan_mode ip_version noize quick_reconnect \
 		wg_peer wiw_outer wiw_inner wg_keepalive bind_address \
-		dns vpn_mode tun_name tun_mtu direct_iran route_direct route_block routes_file \
-		masque_host masque_port masque_password masque_alpn \
-		wireguard_private_key wireguard_peer_public_key wireguard_endpoint wireguard_allowed_ips wireguard_keepalive \
-		mim_host mim_port mim_password mim_obfs mim_obfs_host"
-	
+		dns vpn_mode tun_name tun_mtu direct_iran route_direct route_block routes_file"
+
 	for o in $opts; do
 		section_get "$o"
 	done
 
-	# Defaults - never leave critical values empty
-	[ -n "$tun_name" ] || tun_name="aether0"
+	# Defaults — never leave critical values empty
+	[ -n "$tun_name" ]     || tun_name="aether0"
 	[ -n "$bind_address" ] || bind_address="127.0.0.1:1080"
-	[ -n "$dns" ] || dns="1.1.1.1"
-	[ -n "$tun_mtu" ] || tun_mtu="1420"
-	[ -n "$protocol" ] || protocol="gool"
-	[ -n "$scan_mode" ] || scan_mode="balanced"
-	[ -n "$ip_version" ] || ip_version="both"
-	[ -n "$noize" ] || noize="balanced"
+	[ -n "$dns" ]          || dns="1.1.1.1"
+	[ -n "$tun_mtu" ]      || tun_mtu="1420"
+	[ "$protocol" = "gool" ] || protocol="gool"
+	[ -n "$scan_mode" ]    || scan_mode="balanced"
+	[ -n "$ip_version" ]   || ip_version="both"
+	[ -n "$noize" ]        || noize="balanced"
 	[ -n "$wg_keepalive" ] || wg_keepalive="25"
 
 	# Parse bind address
@@ -81,46 +77,29 @@ load_options() {
 	[ -n "$SOCKS_PORT" ] || SOCKS_PORT="1080"
 }
 
-# Build core command line arguments based on protocol
+# Build gool CLI arguments
 build_args() {
 	ARGS=""
 	add() { ARGS="$ARGS $1"; }
 	add2() { ARGS="$ARGS $1 $2"; }
 
-	# Protocol selection
-	case "$protocol" in
-		gool) add "--gool" ;;
-		masque) add "--masque" ;;
-		wireguard) add "--wireguard" ;;
-		mim) add "--mim" ;;
-		*) add "--gool"; protocol="gool" ;;
-	esac
+	# Protocol — always gool
+	add "--gool"
 
-	# Scan mode (protocol-specific)
-	case "$protocol" in
-		gool|wireguard)
-			case "$scan_mode" in
-				turbo) add "--turbo" ;;
-				thorough) add "--thorough" ;;
-				stealth) add "--stealth" ;;
-				ironclad) add "--ironclad" ;;
-				*) add "--balanced" ;;
-			esac
-			;;
-		masque)
-			case "$scan_mode" in
-				fast) add "--fast-scan" ;;
-				thorough) add "--thorough-scan" ;;
-				*) add "--balanced-scan" ;;
-			esac
-			;;
+	# Scan mode
+	case "$scan_mode" in
+		turbo)    add "--turbo" ;;
+		thorough) add "--thorough" ;;
+		stealth)  add "--stealth" ;;
+		ironclad) add "--ironclad" ;;
+		*)        add "--balanced" ;;
 	esac
 
 	# IP version
 	case "$ip_version" in
-		v4) add "-4" ;;
-		v6) add "-6" ;;
-		*) add "--dual" ;;
+		v4)  add "-4" ;;
+		v6)  add "-6" ;;
+		*)   add "--dual" ;;
 	esac
 
 	# Quick reconnect
@@ -130,63 +109,21 @@ build_args() {
 		add "--no-quick-reconnect"
 	fi
 
-	# Noize/obfuscation (protocol-specific)
-	case "$protocol" in
-		gool|wireguard)
-			case "$noize" in
-				balanced|aggressive|light|off) add2 "--noize" "$noize" ;;
-				*) add2 "--noize" "balanced" ;;
-			esac
-			;;
-		masque)
-			case "$noize" in
-				fragment) add "--fragment" ;;
-				ech) add "--ech" ;;
-				tls-groups) add "--tls-groups" ;;
-				*) ;;
-			esac
-			;;
-		mim)
-			[ -n "$mim_obfs" ] && add2 "--obfs" "$mim_obfs"
-			[ -n "$mim_obfs_host" ] && add2 "--obfs-host" "$mim_obfs_host"
-			;;
+	# Noize / obfuscation
+	case "$noize" in
+		balanced|aggressive|light|off) add2 "--noize" "$noize" ;;
+		*) add2 "--noize" "balanced" ;;
 	esac
 
 	# Gool endpoint pinning
-	if [ "$protocol" = "gool" ]; then
-		valid_endpoint "$wg_peer" && add2 "--wg-peer" "$wg_peer"
-		valid_endpoint "$wiw_outer" && add2 "--wiw-outer" "$wiw_outer"
-		valid_endpoint "$wiw_inner" && add2 "--wiw-inner" "$wiw_inner"
-		case "$wg_keepalive" in ''|*[!0-9]*) ;; *) add2 "--keepalive" "$wg_keepalive" ;; esac
-	fi
-
-	# MASQUE config
-	if [ "$protocol" = "masque" ]; then
-		valid_endpoint "$masque_host" && add2 "--masque-host" "$masque_host"
-		[ -n "$masque_port" ] && add2 "--masque-port" "$masque_port"
-		[ -n "$masque_password" ] && add2 "--masque-password" "$masque_password"
-		[ -n "$masque_alpn" ] && add2 "--masque-alpn" "$masque_alpn"
-	fi
-
-	# WireGuard config
-	if [ "$protocol" = "wireguard" ]; then
-		[ -n "$wireguard_private_key" ] && add2 "--wg-private-key" "$wireguard_private_key"
-		[ -n "$wireguard_peer_public_key" ] && add2 "--wg-peer-pubkey" "$wireguard_peer_public_key"
-		valid_endpoint "$wireguard_endpoint" && add2 "--wg-endpoint" "$wireguard_endpoint"
-		[ -n "$wireguard_allowed_ips" ] && add2 "--wg-allowed-ips" "$wireguard_allowed_ips"
-		case "$wireguard_keepalive" in ''|*[!0-9]*) ;; *) add2 "--wg-keepalive" "$wireguard_keepalive" ;; esac
-	fi
-
-	# MIM config
-	if [ "$protocol" = "mim" ]; then
-		valid_endpoint "$mim_host" && add2 "--mim-host" "$mim_host"
-		[ -n "$mim_port" ] && add2 "--mim-port" "$mim_port"
-		[ -n "$mim_password" ] && add2 "--mim-password" "$mim_password"
-	fi
+	valid_endpoint "$wg_peer"    && add2 "--wg-peer"   "$wg_peer"
+	valid_endpoint "$wiw_outer"  && add2 "--wiw-outer" "$wiw_outer"
+	valid_endpoint "$wiw_inner"  && add2 "--wiw-inner" "$wiw_inner"
+	case "$wg_keepalive" in ''|*[!0-9]*) ;; *) add2 "--keepalive" "$wg_keepalive" ;; esac
 
 	# Common options
 	add2 "--bind" "$bind_address"
-	add2 "--dns" "$dns"
+	add2 "--dns"  "$dns"
 	add2 "--mark" "$FWMARK"
 
 	# Routing
@@ -195,7 +132,7 @@ build_args() {
 
 	# Save args for debugging
 	echo "$ARGS" >"$RUN_DIR/args"
-	log "Built args for protocol=$protocol: $ARGS"
+	log "Built args: $ARGS"
 }
 
 # Generate routes file: user entries first, then domains, then Iranian prefixes
@@ -228,8 +165,6 @@ gen_routes_file() {
 
 # Generate hev-socks5-tunnel config (YAML)
 gen_hev_conf() {
-	local tun_ipv4_mask=24
-	local tun_ipv6_mask=64
 	local wan_iface wan_gwan wan_gwan6
 
 	# Detect WAN interface and gateway
@@ -250,9 +185,8 @@ gen_hev_conf() {
 tun:
   name: $tun_name
   mtu: $tun_mtu
-  ipv4: $TUN_IPV4/$tun_ipv4_mask
-  ipv6: $TUN_IPV6/$tun_ipv6_mask
-  # Disable IPv6 if not available
+  ipv4: $TUN_IPV4/24
+  ipv6: $TUN_IPV6/64
   $( [ -z "$wan_gwan6" ] && echo "disable_ipv6: true" )
 
 socks5:
@@ -300,17 +234,17 @@ net_up() {
 	. "$NET_ENV" 2>/dev/null || return 1
 	local ret=0
 
-	# IPv4 default route via TUN
 	if [ "$vpn_mode" = "1" ]; then
+		# IPv4 default route via TUN
 		ip route replace default dev "$tun_name" table main proto static metric 50 2>/dev/null || ret=1
-		
+
 		# Policy routing: fwmark -> table 100 (WAN)
 		ip rule add fwmark "$FWMARK" table 100 priority 50 2>/dev/null
 		ip rule add fwmark "$FWMARK" table main priority 100 2>/dev/null
-		
+
 		# Table 100: default via WAN
 		[ -n "$WAN_GW" ] && ip route replace default via "$WAN_GW" table 100 2>/dev/null
-		
+
 		# Direct Iranian routes via WAN
 		if [ "$direct_iran" = "1" ] && [ -n "$WAN_GW" ]; then
 			> "$RUN_DIR/iran.applied"
@@ -377,7 +311,7 @@ start_service() {
 	config_load aether
 	load_options
 	mkdir -p "$RUN_DIR"
-	
+
 	[ "$enabled" = "1" ] || { echo "down (disabled)" >"$RUN_DIR/state"; return 0; }
 
 	: >"$RUN_DIR/setup.log"
@@ -393,7 +327,7 @@ start_service() {
 	sleep 1
 
 	# Start core directly (detached, finish.sh will manage it)
-	log "Starting aether core (protocol=$protocol)..."
+	log "Starting aether core (gool)..."
 	setsid "$PROG" $ARGS >>"$RUN_DIR/core.log" 2>&1 < /dev/null &
 	echo $! >"$CORE_PID"
 	log "Core started (PID: $!); TUN finish continues detached"
@@ -405,7 +339,7 @@ start_service() {
 
 stop_service() {
 	log "Stopping aether service..."
-	
+
 	# Stop finish task first
 	kill_finish
 

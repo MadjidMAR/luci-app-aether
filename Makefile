@@ -86,12 +86,9 @@ define Package/luci-app-aether
 endef
 
 define Package/luci-app-aether/description
-  Multi-architecture LuCI app + procd service for the Aether censorship-circumvention
-  core on OpenWrt routers. Supports gool (WG-in-WG), MASQUE, WireGuard, and mim protocols
-  with full-system TUN via hev-socks5-tunnel, automatic Iranian prefix routing,
-  and per-device policy routing via fwmarks/nftables.
-  
-  Supported architectures: aarch64, armv7 (cortex-a7/a9/a15), mips/mipsel, x86_64
+  Gool-only (WG-in-WG) LuCI app + procd service for the Aether censorship-circumvention
+  core on OpenWrt routers, with full-system TUN via hev-socks5-tunnel,
+  automatic Iranian prefix routing, and per-device policy routing via fwmarks.
 endef
 
 define Build/Prepare

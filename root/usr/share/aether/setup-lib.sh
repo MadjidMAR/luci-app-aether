@@ -1,4 +1,4 @@
-# luci-app-aether shared setup logic
+# luci-app-aether shared setup logic (gool-only)
 # Sourced by /etc/init.d/aether AND by the detached finish task
 # (/usr/share/aether/finish.sh). The caller must config_load aether and
 # call load_options before using anything else here.
@@ -34,7 +34,7 @@ die() {
 # endpoint looks like host:port (v4/hostname, or [v6]:port)
 valid_endpoint() {
 	case "$1" in
-		*\]*:*|*:*) return 0 ;;
+		*\\]*:*|*:* ) return 0 ;;
 		*) return 1 ;;
 	esac
 }
@@ -46,68 +46,55 @@ section_get() {
 }
 
 # Load every UCI option the setup needs + defensive defaults + derived
-# SOCKS host/port. An empty tun_name/bind writes a broken hev.yml and
-# misdirects the SOCKS probe, so they can never stay empty.
+# SOCKS host/port. Only gool-relevant options are loaded.
 load_options() {
 	local opts="enabled protocol scan_mode ip_version noize quick_reconnect \
 		wg_peer wiw_outer wiw_inner wg_keepalive bind_address \
-		dns vpn_mode tun_name tun_mtu direct_iran route_direct route_block routes_file \
-		masque_host masque_port masque_password masque_alpn \
-		wireguard_private_key wireguard_peer_public_key wireguard_endpoint wireguard_allowed_ips wireguard_keepalive \
-		mim_host mim_port mim_password mim_obfs mim_obfs_host"
+		dns vpn_mode tun_name tun_mtu direct_iran route_direct route_block routes_file"
 
 	for o in $opts; do
 		section_get "$o"
 	done
 
-	# shellcheck disable=SC2154
+	# Defaults — never leave critical values empty
 	[ -n "$tun_name" ] || tun_name="aether0"
 	[ -n "$bind_address" ] || bind_address="127.0.0.1:1080"
 	SOCKS_HOST="${bind_address%:*}"
 	SOCKS_PORT="${bind_address##*:}"
 	[ -n "$SOCKS_HOST" ] || SOCKS_HOST="127.0.0.1"
 	[ -n "$SOCKS_PORT" ] || SOCKS_PORT="1080"
+
+	# Protocol must be gool — fall back if wrong
+	[ "$protocol" = "gool" ] || protocol="gool"
+	[ -n "$scan_mode" ] || scan_mode="balanced"
+	[ -n "$ip_version" ] || ip_version="both"
+	[ -n "$noize" ] || noize="balanced"
+	[ -n "$wg_keepalive" ] || wg_keepalive="25"
 }
 
+# Build gool CLI arguments
 build_args() {
 	ARGS=""
 	add() { ARGS="$ARGS $1"; }
 	add2() { ARGS="$ARGS $1 $2"; }
 
-	# Protocol selection
-	case "$protocol" in
-		gool) add "--gool" ;;
-		masque) add "--masque" ;;
-		wireguard) add "--wireguard" ;;
-		mim) add "--mim" ;;
-		*) add "--gool"; protocol="gool" ;;
-	esac
+	# Protocol — always gool
+	add "--gool"
 
-	# Scan mode (protocol-specific)
-	case "$protocol" in
-		gool|wireguard)
-			case "$scan_mode" in
-				turbo) add "--turbo" ;;
-				thorough) add "--thorough" ;;
-				stealth) add "--stealth" ;;
-				ironclad) add "--ironclad" ;;
-				*) add "--balanced" ;;
-			esac
-			;;
-		masque)
-			case "$scan_mode" in
-				fast) add "--fast-scan" ;;
-				thorough) add "--thorough-scan" ;;
-				*) add "--balanced-scan" ;;
-			esac
-			;;
+	# Scan mode
+	case "$scan_mode" in
+		turbo)    add "--turbo" ;;
+		thorough) add "--thorough" ;;
+		stealth)  add "--stealth" ;;
+		ironclad) add "--ironclad" ;;
+		*)        add "--balanced" ;;
 	esac
 
 	# IP version
 	case "$ip_version" in
-		v4) add "-4" ;;
-		v6) add "-6" ;;
-		*) add "--dual" ;;
+		v4)  add "-4" ;;
+		v6)  add "-6" ;;
+		*)   add "--dual" ;;
 	esac
 
 	# Quick reconnect
@@ -117,63 +104,21 @@ build_args() {
 		add "--no-quick-reconnect"
 	fi
 
-	# Noize/obfuscation (protocol-specific)
-	case "$protocol" in
-		gool|wireguard)
-			case "$noize" in
-				balanced|aggressive|light|off) add2 "--noize" "$noize" ;;
-				*) add2 "--noize" "balanced" ;;
-			esac
-			;;
-		masque)
-			case "$noize" in
-				fragment) add "--fragment" ;;
-				ech) add "--ech" ;;
-				tls-groups) add "--tls-groups" ;;
-				*) ;;
-			esac
-			;;
-		mim)
-			[ -n "$mim_obfs" ] && add2 "--obfs" "$mim_obfs"
-			[ -n "$mim_obfs_host" ] && add2 "--obfs-host" "$mim_obfs_host"
-			;;
+	# Noize / obfuscation
+	case "$noize" in
+		balanced|aggressive|light|off) add2 "--noize" "$noize" ;;
+		*) add2 "--noize" "balanced" ;;
 	esac
 
 	# Gool endpoint pinning
-	if [ "$protocol" = "gool" ]; then
-		valid_endpoint "$wg_peer" && add2 "--wg-peer" "$wg_peer"
-		valid_endpoint "$wiw_outer" && add2 "--wiw-outer" "$wiw_outer"
-		valid_endpoint "$wiw_inner" && add2 "--wiw-inner" "$wiw_inner"
-		case "$wg_keepalive" in ''|*[!0-9]*) ;; *) add2 "--keepalive" "$wg_keepalive" ;; esac
-	fi
-
-	# MASQUE config
-	if [ "$protocol" = "masque" ]; then
-		valid_endpoint "$masque_host" && add2 "--masque-host" "$masque_host"
-		[ -n "$masque_port" ] && add2 "--masque-port" "$masque_port"
-		[ -n "$masque_password" ] && add2 "--masque-password" "$masque_password"
-		[ -n "$masque_alpn" ] && add2 "--masque-alpn" "$masque_alpn"
-	fi
-
-	# WireGuard config
-	if [ "$protocol" = "wireguard" ]; then
-		[ -n "$wireguard_private_key" ] && add2 "--wg-private-key" "$wireguard_private_key"
-		[ -n "$wireguard_peer_public_key" ] && add2 "--wg-peer-pubkey" "$wireguard_peer_public_key"
-		valid_endpoint "$wireguard_endpoint" && add2 "--wg-endpoint" "$wireguard_endpoint"
-		[ -n "$wireguard_allowed_ips" ] && add2 "--wg-allowed-ips" "$wireguard_allowed_ips"
-		case "$wireguard_keepalive" in ''|*[!0-9]*) ;; *) add2 "--wg-keepalive" "$wireguard_keepalive" ;; esac
-	fi
-
-	# MIM config
-	if [ "$protocol" = "mim" ]; then
-		valid_endpoint "$mim_host" && add2 "--mim-host" "$mim_host"
-		[ -n "$mim_port" ] && add2 "--mim-port" "$mim_port"
-		[ -n "$mim_password" ] && add2 "--mim-password" "$mim_password"
-	fi
+	valid_endpoint "$wg_peer"    && add2 "--wg-peer"   "$wg_peer"
+	valid_endpoint "$wiw_outer"  && add2 "--wiw-outer" "$wiw_outer"
+	valid_endpoint "$wiw_inner"  && add2 "--wiw-inner" "$wiw_inner"
+	case "$wg_keepalive" in ''|*[!0-9]*) ;; *) add2 "--keepalive" "$wg_keepalive" ;; esac
 
 	# Common options
 	add2 "--bind" "$bind_address"
-	add2 "--dns" "$dns"
+	add2 "--dns"  "$dns"
 	add2 "--mark" "$FWMARK"
 
 	# Routing
@@ -182,7 +127,7 @@ build_args() {
 
 	# Save args for debugging
 	echo "$ARGS" >"$RUN_DIR/args"
-	log "Built args for protocol=$protocol: $ARGS"
+	log "Built args: $ARGS"
 }
 
 # Same content as Aethery's iran.rs build_routes_content(): user entries
@@ -283,14 +228,14 @@ net_up() {
 	if [ "$vpn_mode" = "1" ]; then
 		# IPv4 default route via TUN
 		ip route replace default dev "$tun_name" table main proto static metric 50 2>/dev/null || ret=1
-		
+
 		# Policy routing: fwmark -> table 100 (WAN)
 		ip rule add fwmark "$FWMARK" table 100 priority 50 2>/dev/null
 		ip rule add fwmark "$FWMARK" table main priority 100 2>/dev/null
-		
+
 		# Table 100: default via WAN
 		[ -n "$WAN_GW" ] && ip route replace default via "$WAN_GW" table 100 2>/dev/null
-		
+
 		# Direct Iranian routes via WAN
 		if [ "$direct_iran" = "1" ] && [ -n "$WAN_GW" ]; then
 			> "$RUN_DIR/iran.applied"
