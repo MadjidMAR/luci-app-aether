@@ -41,7 +41,7 @@ jobs:
       - name: Add luci-app-aether feed
         run: |
           mkdir -p sdk/feeds/custom/luci-app-aether
-          tar --exclude='sdk/' --exclude='.git/' -cf - . | tar -xf - -C sdk/feeds/custom/luci-app-aether/
+          git archive HEAD | tar -xf - -C sdk/feeds/custom/luci-app-aether/
           echo "src-link custom feeds/custom" >> sdk/feeds.conf.default
           cd sdk
           ./scripts/feeds update custom
