@@ -1,0 +1,75 @@
+config aether 'main'
+	# Master enable switch
+	option enabled '0'
+
+	# Protocol: gool (WG-in-WG), masque, wireguard, mim
+	option protocol 'gool'
+
+	# Scan mode (protocol-specific)
+	# gool/wireguard: turbo, balanced, thorough, stealth, ironclad
+	# masque: fast, balanced, thorough
+	option scan_mode 'balanced'
+
+	# IP version: both, v4, v6
+	option ip_version 'both'
+
+	# Noize/obfuscation (protocol-specific)
+	# gool/wireguard: balanced, aggressive, light, off
+	# masque: fragment, ech, tls-groups
+	# mim: obfs type (tls, http, etc.)
+	option noize 'balanced'
+
+	# Quick reconnect on failure
+	option quick_reconnect '1'
+
+	# --- Gool (WG-in-WG) endpoint pinning ---
+	option wg_peer ''
+	option wiw_outer ''
+	option wiw_inner ''
+	option wg_keepalive '25'
+
+	# --- MASQUE config ---
+	option masque_host ''
+	option masque_port '443'
+	option masque_password ''
+	option masque_alpn 'h3'
+
+	# --- WireGuard config ---
+	option wireguard_private_key ''
+	option wireguard_peer_public_key ''
+	option wireguard_endpoint ''
+	option wireguard_allowed_ips '0.0.0.0/0,::/0'
+	option wireguard_keepalive '25'
+
+	# --- MIM config ---
+	option mim_host ''
+	option mim_port '443'
+	option mim_password ''
+	option mim_obfs 'tls'
+	option mim_obfs_host ''
+
+	# SOCKS bind address (core listens here)
+	option bind_address '127.0.0.1:1080'
+
+	# Upstream DNS
+	option dns '1.1.1.1'
+
+	# VPN mode: 1 = full-system TUN via hev-socks5-tunnel, 0 = SOCKS proxy only
+	option vpn_mode '1'
+
+	# TUN interface settings
+	option tun_name 'aether0'
+	option tun_mtu '1420'
+
+	# Routing
+	# Direct Iranian sites via WAN instead of tunnel
+	option direct_iran '1'
+
+	# Custom direct routes (comma/newline separated: domain, IP/CIDR, port:443)
+	option route_direct ''
+
+	# Custom blocked routes (same format)
+	option route_block ''
+
+	# Custom rules file path (optional) - takes precedence over embedded lists
+	option routes_file ''

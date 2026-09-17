@@ -1,0 +1,159 @@
+<%+header%>
+<div class="cbi-map" id="cbi-aether-status">
+	<h2><%:Aether Status%></h2>
+	<div id="status-container" class="cbi-section">
+		<table class="cbi-section-table">
+			<tbody>
+				<tr>
+					<th><%:State%></th>
+					<td id="status-state"><%:Loading...%></td>
+				</tr>
+				<tr>
+					<th><%:Protocol%></th>
+					<td id="status-protocol">-</td>
+				</tr>
+				<tr>
+					<th><%:VPN Mode%></th>
+					<td id="status-vpn_mode">-</td>
+				</tr>
+				<tr>
+					<th><%:Uptime%></th>
+					<td id="status-uptime">-</td>
+				</tr>
+				<tr>
+					<th><%:Core PID%></th>
+					<td id="status-core_pid">-</td>
+				</tr>
+				<tr>
+					<th><%:TUN PID%></th>
+					<td id="status-hev_pid">-</td>
+				</tr>
+			</tbody>
+		</table>
+	</div>
+
+	<div id="egress-container" class="cbi-section" style="margin-top: 1em;">
+		<h3><%:Egress Information%></h3>
+		<table class="cbi-section-table">
+			<tbody>
+				<tr>
+					<th><%:State%></th>
+					<td id="egress-state"><%:Unknown%></td>
+				</tr>
+				<tr>
+					<th><%:TUN Interface%></th>
+					<td id="egress-tun">-</td>
+				</tr>
+				<tr>
+					<th><%:Latency%></th>
+					<td id="egress-ping">-</td>
+				</tr>
+				<tr>
+					<th><%:Egress IP%></th>
+					<td id="egress-ip">-</td>
+				</tr>
+				<tr>
+					<th><%:Country%></th>
+					<td id="egress-country">-</td>
+				</tr>
+				<tr>
+					<th><%:ASN%></th>
+					<td id="egress-asn">-</td>
+				</tr>
+				<tr>
+					<th><%:Colo%></th>
+					<td id="egress-colo">-</td>
+				</tr>
+				<tr>
+					<th><%:Last Check%></th>
+					<td id="egress-ts">-</td>
+				</tr>
+			</tbody>
+		</table>
+		<button class="cbi-button cbi-button-action" onclick="refreshEgress()"><%:Refresh%></button>
+	</div>
+
+	<div id="actions-container" class="cbi-section" style="margin-top: 1em;">
+		<h3><%:Actions%></h3>
+		<button class="cbi-button cbi-button-apply" id="toggle-btn" onclick="toggleService()"><%:Connect%></button>
+		<button class="cbi-button cbi-button-reload" onclick="refreshIran()" style="margin-left: 0.5em;"><%:Update Iranian Prefixes%></button>
+	</div>
+</div>
+
+<script>
+function fetchStatus() {
+	fetch('<%=luci.dispatcher.build_url("admin/services/aether/api/status")%>')
+		.then(r => r.json())
+		.then(data => {
+			document.getElementById('status-state').textContent = data.state;
+			document.getElementById('status-state').className = data.state === 'up' ? 'text-success' : 'text-error';
+			document.getElementById('status-protocol').textContent = data.protocol.toUpperCase();
+			document.getElementById('status-vpn_mode').textContent = data.vpn_mode === '1' ? '<%:Full TUN%>' : '<%:Proxy Only%>';
+			document.getElementById('status-uptime').textContent = data.uptime || '-';
+			document.getElementById('status-core_pid').textContent = data.core_pid || '-';
+			document.getElementById('status-hev_pid').textContent = data.hev_pid || '-';
+
+			// Update toggle button
+			const btn = document.getElementById('toggle-btn');
+			if (data.state === 'up') {
+				btn.textContent = '<%:Disconnect%>';
+				btn.className = 'cbi-button cbi-button-reset';
+			} else {
+				btn.textContent = '<%:Connect%>';
+				btn.className = 'cbi-button cbi-button-apply';
+			}
+		})
+		.catch(err => console.error('Status fetch failed:', err));
+}
+
+function fetchEgress() {
+	fetch('<%=luci.dispatcher.build_url("admin/services/aether/api/egress")%>')
+		.then(r => r.json())
+		.then(data => {
+			document.getElementById('egress-state').textContent = data.state;
+			document.getElementById('egress-tun').textContent = data.tun || '-';
+			document.getElementById('egress-ping').textContent = data.ping_ms + ' ms';
+			document.getElementById('egress-ip').textContent = data.egress_ip || '-';
+			document.getElementById('egress-country').textContent = data.country || '-';
+			document.getElementById('egress-asn').textContent = data.asn || '-';
+			document.getElementById('egress-colo').textContent = data.colo || '-';
+			document.getElementById('egress-ts').textContent = data.ts || '-';
+		})
+		.catch(err => console.error('Egress fetch failed:', err));
+}
+
+function refreshEgress() {
+	fetch('<%=luci.dispatcher.build_url("admin/services/aether/api/egress?refresh=1")%>')
+		.then(() => {
+			setTimeout(fetchEgress, 2000);
+		});
+}
+
+function toggleService() {
+	const btn = document.getElementById('toggle-btn');
+	const action = btn.textContent.includes('<%:Connect%>') ? 'on' : 'off';
+	fetch('<%=luci.dispatcher.build_url("admin/services/aether/api/connect")%>', {
+		method: 'POST',
+		headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+		body: 'action=' + action
+	})
+	.then(r => r.json())
+	.then(() => {
+		setTimeout(fetchStatus, 1000);
+	});
+}
+
+function refreshIran() {
+	fetch('<%=luci.dispatcher.build_url("admin/services/aether/api/refresh_iran")%>', {method: 'POST'})
+		.then(r => r.json())
+		.then(data => alert(data.message));
+}
+
+// Initial load
+fetchStatus();
+fetchEgress();
+
+// Poll status every 5 seconds
+setInterval(fetchStatus, 5000);
+</script>
+<%+footer%>

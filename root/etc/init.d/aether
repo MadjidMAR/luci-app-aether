@@ -1,0 +1,428 @@
+#!/bin/sh /etc/rc.common
+# Aether for OpenWrt (procd): multi-protocol censorship circumvention
+# Supports: gool, masque, wireguard, mim
+# Full-system TUN via hev-socks5-tunnel with nftables/fw4 integration
+# Automatic WAN detection, IPv6 support, multi-WAN awareness
+
+START=95
+STOP=10
+USE_PROCD=1
+PROG=/usr/sbin/aether
+PROG_HEV=/usr/bin/hev-socks5-tunnel
+SHARE_DIR=/usr/share/aether
+RUN_DIR=/var/run/aether
+ROUTES_OUT=$RUN_DIR/routes.txt
+HEV_CONF=$RUN_DIR/hev.yml
+NET_ENV=$RUN_DIR/net.env
+FINISH_PID=$RUN_DIR/finish.pid
+HEV_PID=$RUN_DIR/hev.pid
+CORE_PID=$RUN_DIR/core.pid
+FWMARK=0x9e
+TUN_IPV4=198.18.0.1
+TUN_IPV6=fd00::1
+
+# Default Iranian domains (supplement to IP prefixes)
+IR_DOMAINS="private,digikala.com,aparat.com,filimo.com,telewebion.com,varzesh3.com,snapp.ir,cafebazaar.ir,divar.ir,namava.ir,shad.ir"
+
+log() {
+	logger -t aether "$*"
+	echo "[$(date +%T)] $*" >>"$RUN_DIR/setup.log"
+}
+
+die() {
+	log "FATAL: $*"
+	echo "down" >"$RUN_DIR/state"
+	exit 1
+}
+
+# Validate endpoint format: host:port (IPv4, hostname, or [IPv6]:port)
+valid_endpoint() {
+	case "$1" in
+		*\]*:*|*:*) return 0 ;;
+		*) return 1 ;;
+	esac
+}
+
+# Get UCI option with default
+section_get() {
+	local val
+	val=$(config_get "main" "$1" "")
+	export "$1=$val"
+}
+
+# Load all UCI options with defensive defaults
+load_options() {
+	local opts="enabled protocol scan_mode ip_version noize quick_reconnect \
+		wg_peer wiw_outer wiw_inner wg_keepalive bind_address \
+		dns vpn_mode tun_name tun_mtu direct_iran route_direct route_block routes_file \
+		masque_host masque_port masque_password masque_alpn \
+		wireguard_private_key wireguard_peer_public_key wireguard_endpoint wireguard_allowed_ips wireguard_keepalive \
+		mim_host mim_port mim_password mim_obfs mim_obfs_host"
+	
+	for o in $opts; do
+		section_get "$o"
+	done
+
+	# Defaults - never leave critical values empty
+	[ -n "$tun_name" ] || tun_name="aether0"
+	[ -n "$bind_address" ] || bind_address="127.0.0.1:1080"
+	[ -n "$dns" ] || dns="1.1.1.1"
+	[ -n "$tun_mtu" ] || tun_mtu="1420"
+	[ -n "$protocol" ] || protocol="gool"
+	[ -n "$scan_mode" ] || scan_mode="balanced"
+	[ -n "$ip_version" ] || ip_version="both"
+	[ -n "$noize" ] || noize="balanced"
+	[ -n "$wg_keepalive" ] || wg_keepalive="25"
+
+	# Parse bind address
+	SOCKS_HOST="${bind_address%:*}"
+	SOCKS_PORT="${bind_address##*:}"
+	[ -n "$SOCKS_HOST" ] || SOCKS_HOST="127.0.0.1"
+	[ -n "$SOCKS_PORT" ] || SOCKS_PORT="1080"
+}
+
+# Build core command line arguments based on protocol
+build_args() {
+	ARGS=""
+	add() { ARGS="$ARGS $1"; }
+	add2() { ARGS="$ARGS $1 $2"; }
+
+	# Protocol selection
+	case "$protocol" in
+		gool) add "--gool" ;;
+		masque) add "--masque" ;;
+		wireguard) add "--wireguard" ;;
+		mim) add "--mim" ;;
+		*) add "--gool"; protocol="gool" ;;
+	esac
+
+	# Scan mode (protocol-specific)
+	case "$protocol" in
+		gool|wireguard)
+			case "$scan_mode" in
+				turbo) add "--turbo" ;;
+				thorough) add "--thorough" ;;
+				stealth) add "--stealth" ;;
+				ironclad) add "--ironclad" ;;
+				*) add "--balanced" ;;
+			esac
+			;;
+		masque)
+			case "$scan_mode" in
+				fast) add "--fast-scan" ;;
+				thorough) add "--thorough-scan" ;;
+				*) add "--balanced-scan" ;;
+			esac
+			;;
+	esac
+
+	# IP version
+	case "$ip_version" in
+		v4) add "-4" ;;
+		v6) add "-6" ;;
+		*) add "--dual" ;;
+	esac
+
+	# Quick reconnect
+	if [ "$quick_reconnect" = "1" ]; then
+		add "--quick-reconnect"
+	else
+		add "--no-quick-reconnect"
+	fi
+
+	# Noize/obfuscation (protocol-specific)
+	case "$protocol" in
+		gool|wireguard)
+			case "$noize" in
+				balanced|aggressive|light|off) add2 "--noize" "$noize" ;;
+				*) add2 "--noize" "balanced" ;;
+			esac
+			;;
+		masque)
+			case "$noize" in
+				fragment) add "--fragment" ;;
+				ech) add "--ech" ;;
+				tls-groups) add "--tls-groups" ;;
+				*) ;;
+			esac
+			;;
+		mim)
+			[ -n "$mim_obfs" ] && add2 "--obfs" "$mim_obfs"
+			[ -n "$mim_obfs_host" ] && add2 "--obfs-host" "$mim_obfs_host"
+			;;
+	esac
+
+	# Gool endpoint pinning
+	if [ "$protocol" = "gool" ]; then
+		valid_endpoint "$wg_peer" && add2 "--wg-peer" "$wg_peer"
+		valid_endpoint "$wiw_outer" && add2 "--wiw-outer" "$wiw_outer"
+		valid_endpoint "$wiw_inner" && add2 "--wiw-inner" "$wiw_inner"
+		case "$wg_keepalive" in ''|*[!0-9]*) ;; *) add2 "--keepalive" "$wg_keepalive" ;; esac
+	fi
+
+	# MASQUE config
+	if [ "$protocol" = "masque" ]; then
+		valid_endpoint "$masque_host" && add2 "--masque-host" "$masque_host"
+		[ -n "$masque_port" ] && add2 "--masque-port" "$masque_port"
+		[ -n "$masque_password" ] && add2 "--masque-password" "$masque_password"
+		[ -n "$masque_alpn" ] && add2 "--masque-alpn" "$masque_alpn"
+	fi
+
+	# WireGuard config
+	if [ "$protocol" = "wireguard" ]; then
+		[ -n "$wireguard_private_key" ] && add2 "--wg-private-key" "$wireguard_private_key"
+		[ -n "$wireguard_peer_public_key" ] && add2 "--wg-peer-pubkey" "$wireguard_peer_public_key"
+		valid_endpoint "$wireguard_endpoint" && add2 "--wg-endpoint" "$wireguard_endpoint"
+		[ -n "$wireguard_allowed_ips" ] && add2 "--wg-allowed-ips" "$wireguard_allowed_ips"
+		case "$wireguard_keepalive" in ''|*[!0-9]*) ;; *) add2 "--wg-keepalive" "$wireguard_keepalive" ;; esac
+	fi
+
+	# MIM config
+	if [ "$protocol" = "mim" ]; then
+		valid_endpoint "$mim_host" && add2 "--mim-host" "$mim_host"
+		[ -n "$mim_port" ] && add2 "--mim-port" "$mim_port"
+		[ -n "$mim_password" ] && add2 "--mim-password" "$mim_password"
+	fi
+
+	# Common options
+	add2 "--bind" "$bind_address"
+	add2 "--dns" "$dns"
+	add2 "--mark" "$FWMARK"
+
+	# Routing
+	gen_routes_file
+	add2 "--routes" "$ROUTES_OUT"
+
+	# Save args for debugging
+	echo "$ARGS" >"$RUN_DIR/args"
+	log "Built args for protocol=$protocol: $ARGS"
+}
+
+# Generate routes file: user entries first, then domains, then Iranian prefixes
+gen_routes_file() {
+	{
+		echo "[direct]"
+
+		# User-specified direct routes
+		[ -n "$route_direct" ] && echo "$route_direct" | tr ',' '\n' | grep -v '^$'
+
+		# Iranian domains preset
+		echo "$IR_DOMAINS" | tr ',' '\n'
+
+		# Embedded Iranian IPv4 prefixes
+		[ -f "$SHARE_DIR/iran-ipv4.txt" ] && cat "$SHARE_DIR/iran-ipv4.txt"
+
+		# Embedded Iranian IPv6 prefixes
+		[ -f "$SHARE_DIR/iran-ipv6.txt" ] && cat "$SHARE_DIR/iran-ipv6.txt"
+
+		# User-specified blocked routes
+		echo "[block]"
+		[ -n "$route_block" ] && echo "$route_block" | tr ',' '\n' | grep -v '^$'
+
+		# Custom routes file takes precedence
+		if [ -n "$routes_file" ] && [ -f "$routes_file" ]; then
+			cat "$routes_file"
+		fi
+	} >"$ROUTES_OUT"
+}
+
+# Generate hev-socks5-tunnel config (YAML)
+gen_hev_conf() {
+	local tun_ipv4_mask=24
+	local tun_ipv6_mask=64
+	local wan_iface wan_gwan wan_gwan6
+
+	# Detect WAN interface and gateway
+	. /lib/functions/network.sh
+	network_flush_cache
+	network_find_wan wan_iface
+	network_get_gateway wan_gwan "$wan_iface"
+	network_get_gateway6 wan_gwan6 "$wan_iface"
+
+	# Save network env for stop_service
+	{
+		echo "WAN_IFACE=$wan_iface"
+		echo "WAN_GW=$wan_gwan"
+		echo "WAN_GW6=$wan_gwan6"
+	} >"$NET_ENV"
+
+	cat >"$HEV_CONF" <<EOF
+tun:
+  name: $tun_name
+  mtu: $tun_mtu
+  ipv4: $TUN_IPV4/$tun_ipv4_mask
+  ipv6: $TUN_IPV6/$tun_ipv6_mask
+  # Disable IPv6 if not available
+  $( [ -z "$wan_gwan6" ] && echo "disable_ipv6: true" )
+
+socks5:
+  - bind: $bind_address
+    timeout: 30
+
+routing:
+  # Mark bypass for core traffic (loop prevention)
+  fwmark: $FWMARK
+  table: 100
+  # Default route via TUN when vpn_mode=1
+  default_via_tun: $( [ "$vpn_mode" = "1" ] && echo "true" || echo "false" )
+  # Direct routes for Iranian prefixes (via WAN)
+  direct_via_wan: $( [ "$direct_iran" = "1" ] && echo "true" || echo "false" )
+  wan_gateway: $wan_gwan
+  wan_gateway6: $wan_gwan6
+
+dns:
+  upstream: $dns
+  hijack: true
+
+log:
+  level: info
+  file: $RUN_DIR/hev.log
+EOF
+}
+
+# Wait for condition with timeout
+wait_for() {
+	local desc="$1" timeout="$2" cond="$3"
+	local elapsed=0 interval=1
+
+	log "Waiting for $desc (timeout: ${timeout}s)..."
+	while [ $elapsed -lt $timeout ]; do
+		eval "$cond" && { log "$desc ready"; return 0; }
+		sleep $interval
+		elapsed=$((elapsed + interval))
+	done
+	log "Timeout waiting for $desc"
+	return 1
+}
+
+# Network setup after TUN is up
+net_up() {
+	. "$NET_ENV" 2>/dev/null || return 1
+	local ret=0
+
+	# IPv4 default route via TUN
+	if [ "$vpn_mode" = "1" ]; then
+		ip route replace default dev "$tun_name" table main proto static metric 50 2>/dev/null || ret=1
+		
+		# Policy routing: fwmark -> table 100 (WAN)
+		ip rule add fwmark "$FWMARK" table 100 priority 50 2>/dev/null
+		ip rule add fwmark "$FWMARK" table main priority 100 2>/dev/null
+		
+		# Table 100: default via WAN
+		[ -n "$WAN_GW" ] && ip route replace default via "$WAN_GW" table 100 2>/dev/null
+		
+		# Direct Iranian routes via WAN
+		if [ "$direct_iran" = "1" ] && [ -n "$WAN_GW" ]; then
+			> "$RUN_DIR/iran.applied"
+			while read -r pfx; do
+				[ -n "$pfx" ] && {
+					ip route replace "$pfx" via "$WAN_GW" table 100 2>/dev/null && \
+					echo "$pfx" >> "$RUN_DIR/iran.applied"
+				}
+			done < <(grep -E '^[0-9]' "$SHARE_DIR/iran-ipv4.txt" 2>/dev/null)
+		fi
+
+		# IPv6
+		if [ -n "$WAN_GW6" ] && [ "$ip_version" != "v4" ]; then
+			ip -6 route replace default dev "$tun_name" table main proto static metric 50 2>/dev/null || ret=1
+			ip -6 rule add fwmark "$FWMARK" table 100 priority 50 2>/dev/null
+			ip -6 rule add fwmark "$FWMARK" table main priority 100 2>/dev/null
+			ip -6 route replace default via "$WAN_GW6" table 100 2>/dev/null
+
+			if [ "$direct_iran" = "1" ]; then
+				while read -r pfx; do
+					[ -n "$pfx" ] && ip -6 route replace "$pfx" via "$WAN_GW6" table 100 2>/dev/null
+				done < <(grep -E '^[0-9a-f]' "$SHARE_DIR/iran-ipv6.txt" 2>/dev/null)
+			fi
+		fi
+
+		# Flush DNS cache
+		/etc/init.d/dnsmasq restart 2>/dev/null || true
+	fi
+
+	return $ret
+}
+
+# Network teardown
+net_down() {
+	[ -f "$NET_ENV" ] && . "$NET_ENV"
+	[ -f "$RUN_DIR/iran.applied" ] && [ -n "$WAN_GW" ] && {
+		while read -r pfx; do
+			[ -n "$pfx" ] && ip route del "$pfx" via "$WAN_GW" table 100 2>/dev/null
+		done <"$RUN_DIR/iran.applied"
+	}
+	ip route del default dev "$tun_name" table main 2>/dev/null
+	ip -6 route del default dev "$tun_name" table main 2>/dev/null
+	ip rule del fwmark "$FWMARK" table 100 priority 50 2>/dev/null
+	ip rule del fwmark "$FWMARK" table main priority 100 2>/dev/null
+	ip -6 rule del fwmark "$FWMARK" table 100 priority 50 2>/dev/null
+	ip -6 rule del fwmark "$FWMARK" table main priority 100 2>/dev/null
+	ip route flush table 100 2>/dev/null
+	ip -6 route flush table 100 2>/dev/null
+	rm -f "$RUN_DIR/iran.applied" "$NET_ENV"
+}
+
+# Kill stale finish task (verified by cmdline)
+kill_finish() {
+	[ -f "$FINISH_PID" ] || return 0
+	read -r FP <"$FINISH_PID" 2>/dev/null
+	if [ -n "$FP" ] && grep -q "finish.sh" "/proc/$FP/cmdline" 2>/dev/null; then
+		kill "$FP" 2>/dev/null
+		sleep 1
+	fi
+	rm -f "$FINISH_PID"
+}
+
+start_service() {
+	config_load aether
+	load_options
+	mkdir -p "$RUN_DIR"
+	
+	[ "$enabled" = "1" ] || { echo "down (disabled)" >"$RUN_DIR/state"; return 0; }
+
+	: >"$RUN_DIR/setup.log"
+	echo "starting" >"$RUN_DIR/state"
+	[ -x "$PROG" ] || die "ERROR: $PROG missing"
+
+	build_args
+
+	# Kill any stale processes
+	kill_finish
+	for p in $(pidof aether 2>/dev/null); do kill "$p" 2>/dev/null; done
+	for p in $(pidof hev-socks5-tunnel 2>/dev/null); do kill "$p" 2>/dev/null; done
+	sleep 1
+
+	# Start core directly (detached, finish.sh will manage it)
+	log "Starting aether core (protocol=$protocol)..."
+	setsid "$PROG" $ARGS >>"$RUN_DIR/core.log" 2>&1 < /dev/null &
+	echo $! >"$CORE_PID"
+	log "Core started (PID: $!); TUN finish continues detached"
+
+	# Start detached finish task
+	setsid "$SHARE_DIR/finish.sh" >>"$RUN_DIR/finish.log" 2>&1 < /dev/null &
+	return 0
+}
+
+stop_service() {
+	log "Stopping aether service..."
+	
+	# Stop finish task first
+	kill_finish
+
+	# Kill core and hev
+	for p in $(pidof aether 2>/dev/null); do kill "$p" 2>/dev/null; done
+	for p in $(pidof hev-socks5-tunnel 2>/dev/null); do kill "$p" 2>/dev/null; done
+
+	# Clean up network
+	net_down
+
+	# Cleanup
+	rm -f "$RUN_DIR/uptime" "$RUN_DIR/hev.pid" "$RUN_DIR/core.pid" "$RUN_DIR/args" "$ROUTES_OUT" "$HEV_CONF"
+	echo "down" >"$RUN_DIR/state"
+	logger -t aether "DOWN"
+}
+
+reload_service() {
+	stop
+	start
+}

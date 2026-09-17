@@ -1,0 +1,16 @@
+# Iranian IPv4 prefixes (aggregated)
+# Source: https://github.com/Cod3ByAmir/iran-ip-ranges
+# Updated: 2026-09-17
+# Count: 2087 prefixes (will be refreshed by refresh-iran-ranges.sh)
+
+# Placeholder - will be replaced by refresh script
+5.144.128.0/18
+5.144.192.0/19
+5.152.0.0/16
+5.181.0.0/16
+5.200.0.0/16
+5.201.0.0/16
+5.202.0.0/16
+5.203.0.0/16
+5.204.0.0/16
+5.205.0.0/16

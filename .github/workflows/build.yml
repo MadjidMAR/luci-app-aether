@@ -1,0 +1,89 @@
+name: Build OpenWrt IPKs
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  release:
+    types: [published]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: aarch64
+            subtarget: generic
+            pkgarch: aarch64_cortex-a53
+          - arch: arm
+            subtarget: armv7
+            pkgarch: arm_cortex-a7_neon-vfpv4
+          - arch: x86
+            subtarget: 64
+            pkgarch: x86_64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download OpenWrt SDK
+        run: |
+          SDK_URL="https://downloads.openwrt.org/releases/24.10.0/targets/${{ matrix.arch }}/${{ matrix.subtarget }}/openwrt-sdk-24.10.0-${{ matrix.arch }}-${{ matrix.subtarget }}_gcc-13.3.0_musl.Linux-x86_64.tar.xz"
+          echo "Downloading SDK: $SDK_URL"
+          wget -q --timeout=120 "$SDK_URL" -O sdk.tar.xz || {
+            echo "SDK not found at expected URL, trying alternative..."
+            SDK_URL="https://downloads.openwrt.org/releases/24.10.0/targets/${{ matrix.arch }}/${{ matrix.subtarget }}/openwrt-sdk-24.10.0-${{ matrix.arch }}_gcc-13.3.0_musl.Linux-x86_64.tar.xz"
+            wget -q --timeout=120 "$SDK_URL" -O sdk.tar.xz
+          }
+          tar xf sdk.tar.xz
+          mv openwrt-sdk-* sdk
+          ls -la sdk/
+
+      - name: Add luci-app-aether feed
+        run: |
+          mkdir -p sdk/feeds/custom
+          cp -r ../luci-app-aether sdk/feeds/custom/aether
+          cd sdk
+          ./scripts/feeds update custom
+          ./scripts/feeds install -a -p custom
+
+      - name: Build package
+        run: |
+          cd sdk
+          make defconfig
+          make package/luci-app-aether/compile V=s
+
+      - name: Collect IPK
+        run: |
+          mkdir -p artifacts
+          find sdk/bin -name "luci-app-aether_*.ipk" -exec cp {} artifacts/ \;
+          ls -la artifacts/
+
+      - name: Upload IPK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ipk-${{ matrix.pkgarch }}
+          path: artifacts/*.ipk
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release'
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Generate repo index
+        run: |
+          cd artifacts
+          bash ../gen-repo.sh .
+      - name: Upload to release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            artifacts/*.ipk
+            artifacts/Packages
+            artifacts/Packages.gz
+            artifacts/SHA256SUMS.txt

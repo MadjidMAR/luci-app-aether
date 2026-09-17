@@ -1,0 +1,14 @@
+# Iranian IPv6 prefixes (aggregated)
+# Source: https://github.com/Cod3ByAmir/iran-ip-ranges
+# Updated: 2026-09-17
+# Count: 766 prefixes (will be refreshed by refresh-iran-ranges.sh)
+
+# Placeholder - will be replaced by refresh script
+2a02:4780::/29
+2a02:4780:8::/33
+2a02:4780:100::/32
+2a02:4780:200::/32
+2a02:4780:400::/32
+2a02:4780:800::/32
+2a02:4780:1000::/32
+2a02:4780:2000::/32
